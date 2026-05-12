@@ -20,7 +20,6 @@ FUND_CIK = "0002045724"
 @st.cache_data(ttl=86400) # Cache SEC structural scrape for 24 hours to stay efficient
 def scrape_latest_13f_holdings(cik):
     """Fetches and decodes the most recent Form 13F filing directly from SEC EDGAR."""
-    # SEC EDGAR mandates an identifiable User-Agent header to avoid blocking
     headers = {
         'User-Agent': 'Research Portal admin@researchportal.com'
     }
@@ -30,13 +29,13 @@ def scrape_latest_13f_holdings(cik):
     response = requests.get(sec_url, headers=headers)
     
     if response.status_code != 200:
-        st.error(f"Failed to connect to SEC database (Status: {response.status_code}). Falling back to baseline tracking.")
+        st.error(f"Failed to connect to SEC database (Status: {response.status_code}).")
         return pd.DataFrame()
         
     data = response.json()
     recent_filings = data['filings']['recent']
     
-    # Step B: Scan for the absolute newest 13F-HR (Holdings Report) document entry
+    # Step B: Find the index of the absolute newest 13F-HR (Holdings Report) 
     idx = -1
     for i, form_type in enumerate(recent_filings['form']):
         if form_type == '13F-HR':
@@ -51,42 +50,49 @@ def scrape_latest_13f_holdings(cik):
     filing_date = recent_filings['filingDate'][idx]
     st.info(f"📁 Target Found: Parsing SEC Filing Date {filing_date} (Accession No: {acc_num})")
     
-    # Step C: Interrogate the directory listing index to target the parsing XML data worksheet
-    doc_index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_num}/"
-    dir_response = requests.get(doc_index_url, headers=headers)
+    # Step C: Dynamic Directory Mapping
+    # Instead of filtering purely by string matching, we read the index page table cells
+    doc_index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_num}/{recent_filings['accessionNumber'][idx]}.txt"
+    
+    # Fallback to scanning the main directory page securely
+    dir_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_num}/"
+    dir_response = requests.get(dir_url, headers=headers)
     soup = BeautifulSoup(dir_response.text, 'html.parser')
     
     xml_path = None
+    # Look for files ending in .xml that are NOT the primary cover page document
     for link in soup.find_all('a'):
         href = link.get('href', '')
-        # Isolate the information table file containing quantitative assets data
-        if 'informationtable' in href.lower() and href.endswith('.xml'):
+        if href.endswith('.xml') and 'primary_doc' not in href.lower():
             xml_path = href
             break
             
+    # Emergency fallback: if they named it uniquely without distinct directory anchors
     if not xml_path:
-        st.error("Target XML information sheet data block layout missing.")
+        for link in soup.find_all('a'):
+            href = link.get('href', '')
+            if href.endswith('.xml'):
+                xml_path = href  # Grab available XML sheet
+    
+    if not xml_path:
+        st.error("Target XML information sheet data block layout missing from index directory.")
         return pd.DataFrame()
         
-    # Step D: Download and process the raw XML holdings manifest
     xml_url = f"https://www.sec.gov{xml_path}"
     xml_response = requests.get(xml_url, headers=headers)
     
+    # Step D: Robust XML Tree Navigation
     root = ET.fromstring(xml_response.content)
-    
-    # Strip uniform resource identifier schemas out of tags to balance parsing loops
     for el in root.iter():
         if '}' in el.tag:
             el.tag = el.tag.split('}', 1)[1]
             
-    # Step E: Parse structural nodes into records
     records = []
     for info in root.findall('infoTable'):
         name = info.find('nameOfIssuer').text if info.find('nameOfIssuer') is not None else "Unknown"
         shares = int(info.find('shrsOrPrntAmt/sshPrnamt').text) if info.find('shrsOrPrntAmt/sshPrnamt') is not None else 0
         value_thousands = int(info.find('value').text) if info.find('value') is not None else 0
         
-        # Capture option derivative attributes if listed (Put/Call parameters)
         put_call = info.find('putCall')
         option_type = f" ({put_call.text.upper()})" if put_call is not None and put_call.text else ""
         
