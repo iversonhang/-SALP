@@ -136,12 +136,22 @@ def process_market_and_deltas(raw_df, historical_data):
     if raw_df.empty:
         return pd.DataFrame()
         
+    # Hardened dictionary handling capitalization variations from SEC filings
     ticker_routing = {
-        'Bloom Energy Corp': 'BE', 'Lumentum Hldgs Inc': 'LITE', 
-        'Core Scientific Inc': 'CORZ', 'Iren Ltd': 'IREN', 
-        'Applied Digital Corp': 'APLD', 'Sandisk Corp': 'SNDK', 
-        'Eqt Corp': 'EQT', 'Tower Semiconductor Ltd': 'TSEM', 
-        'Cipher Mining Inc': 'CIFR', 'Intel Corp': 'INTC'
+        'Bloom Energy Corp': 'BE',
+        'Bloom Energy': 'BE',
+        'Lumentum Hldgs Inc': 'LITE',
+        'Lumentum Holdings Inc': 'LITE',
+        'Core Scientific Inc': 'CORZ',
+        'Iren Ltd': 'IREN',
+        'Iris Energy Ltd': 'IREN',
+        'Applied Digital Corp': 'APLD',
+        'Sandisk Corp': 'SNDK',
+        'Western Digital Corp': 'WDC',
+        'Eqt Corp': 'EQT',
+        'Tower Semiconductor Ltd': 'TSEM',
+        'Cipher Mining Inc': 'CIFR',
+        'Intel Corp': 'INTC'
     }
     
     prev_positions = historical_data.get('positions', {})
@@ -151,7 +161,12 @@ def process_market_and_deltas(raw_df, historical_data):
     for _, row in raw_df.iterrows():
         name = row['Company']
         clean_name = name.split('(')[0].strip()
-        ticker = ticker_routing.get(clean_name, None)
+        
+        # Strip trailing commas, periods or common text discrepancies
+        clean_name_normalized = clean_name.replace(',', '').replace('.', '').strip()
+        
+        # Try finding ticker via standard or normalized paths
+        ticker = ticker_routing.get(clean_name, ticker_routing.get(clean_name_normalized, None))
         
         # Calculate Share Volume Changes (Buys/Sells)
         current_shares = row['Disclosed_Shares']
@@ -171,7 +186,9 @@ def process_market_and_deltas(raw_df, historical_data):
             action = "⚪ Holding Position"
             
         close_price, pct_change = 0.0, 0.0
-        if ticker and "CALL" not in name and "PUT" not in name:
+        
+        # Explicit check: If it matches a ticker and isn't an options contract wrapper
+        if ticker and "CALL" not in name.upper() and "PUT" not in name.upper():
             try:
                 stock = yf.Ticker(ticker)
                 todays_data = stock.history(period='1d')
@@ -182,7 +199,8 @@ def process_market_and_deltas(raw_df, historical_data):
             except:
                 pass
         else:
-            ticker = "DERIVATIVE/OPTION"
+            # Safely categorize options contracts or unmatched items to prevent calculations from breaking
+            ticker = "DERIVATIVE/OPTION" if ("CALL" in name.upper() or "PUT" in name.upper()) else "UNMAPPED/PRIVATE"
             
         tickers.append(ticker)
         prices.append(close_price)
@@ -190,7 +208,6 @@ def process_market_and_deltas(raw_df, historical_data):
         deltas.append(delta)
         actions.append(action)
         
-    # Process potential liquidations (positions that vanished from the new filing)
     processed_df = raw_df.copy()
     processed_df['Ticker'] = tickers
     processed_df['Live Price ($)'] = prices
@@ -198,6 +215,8 @@ def process_market_and_deltas(raw_df, historical_data):
     processed_df['Position Delta (Shares)'] = deltas
     processed_df['Trade Action'] = actions
     
+    # If standard ticker data found, calculate live portfolio size. 
+    # Fall back safely onto the SEC's internal valuation rules if it is a private derivative placement.
     processed_df['Est. Value ($M)'] = processed_df.apply(
         lambda r: round((r['Disclosed_Shares'] * r['Live Price ($)']) / 1_000_000, 2) if r['Live Price ($)'] > 0 
         else round((r['SEC_Value_Thousands'] * 1000) / 1_000_000, 2), axis=1
