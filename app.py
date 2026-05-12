@@ -51,10 +51,6 @@ def scrape_latest_13f_holdings(cik):
     st.info(f"📁 Target Found: Parsing SEC Filing Date {filing_date} (Accession No: {acc_num})")
     
     # Step C: Dynamic Directory Mapping
-    # Instead of filtering purely by string matching, we read the index page table cells
-    doc_index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_num}/{recent_filings['accessionNumber'][idx]}.txt"
-    
-    # Fallback to scanning the main directory page securely
     dir_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_num}/"
     dir_response = requests.get(dir_url, headers=headers)
     soup = BeautifulSoup(dir_response.text, 'html.parser')
@@ -198,7 +194,7 @@ if not raw_holdings.empty:
     left_chart_col, right_chart_col = st.columns(2)
     with left_chart_col:
         st.subheader("Asset Allocation Mapping")
-        fig_pie = px.pie(df, values='Est. Value ($M)', names='Company', hole=0.4, color_discrete_sequence=px.colors.sequential.Plotlysh)
+        fig_pie = px.pie(df, values='Est. Value ($M)', names='Company', hole=0.4, color_discrete_sequence=px.colors.sequential.Viridis)
         st.plotly_chart(fig_pie, use_container_width=True)
         
     with right_chart_col:
